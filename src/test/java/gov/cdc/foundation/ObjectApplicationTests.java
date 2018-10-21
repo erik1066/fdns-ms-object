@@ -26,17 +26,19 @@ import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @RunWith(SpringRunner.class)
 @SpringBootTest(
-		webEnvironment = WebEnvironment.RANDOM_PORT, 
-		properties = { 
+		webEnvironment = WebEnvironment.RANDOM_PORT,
+		properties = {
 					"logging.fluentd.host=fluentd",
 					"logging.fluentd.port=24224",
 					"mongo.host=mongo",
@@ -82,7 +84,7 @@ public class ObjectApplicationTests {
 		assertThat(response.getStatusCodeValue()).isEqualTo(200);
 		assertThat(response.getBody(), CoreMatchers.containsString("version"));
 	}
-	
+
 	@Test
 	public void testAll() throws Exception {
 		String collectionName = Long.toString(Calendar.getInstance().getTime().getTime());
@@ -118,6 +120,7 @@ public class ObjectApplicationTests {
 		assertThat(queryAllObjects(collectionName)).isEqualTo(0);
 		assertThat(aggregate(collectionName)).isEqualTo(0);
 		deleteCollection(collectionName);
+		assertThat(bulkCsvImport(collectionName)).isEqualTo(2);
 	}
 
 	public void createObject(String collection, String id) throws Exception {
@@ -126,14 +129,14 @@ public class ObjectApplicationTests {
                 .contentType("application/json"))
 				.andExpect(status().isCreated());
 	}
-	
+
 	public void updateObject(String collection, String id) throws Exception {
 		mvc.perform(put(baseUrlPath + "/" + DB_NAME + "/" + collection + "/" + id)
 				.content("{ 'test' : '" + (new Date()).getTime() + "' }")
 				.contentType("application/json"))
 		.andExpect(status().isOk());
 	}
-	
+
 	public String createObject(String collection) throws Exception {
 		MvcResult result = mvc.perform(post(baseUrlPath + "/" + DB_NAME + "/" + collection)
 				.content("{ 'test' : '" + (new Date()).getTime() + "' }")
@@ -142,7 +145,7 @@ public class ObjectApplicationTests {
 				.andReturn();
 		return (new JSONObject(result.getResponse().getContentAsString())).getJSONObject("_id").getString("$oid");
 	}
-	
+
 	public void createObjects(String collection) throws Exception {
 		MvcResult result = mvc.perform(post(baseUrlPath + "/multi/" + DB_NAME + "/" + collection)
 				.content("[{ 'test' : '" + (new Date()).getTime() + "' },{ 'test' : '" + (new Date()).getTime() + "' }{ 'test' : '" + (new Date()).getTime() + "' }]")
@@ -153,7 +156,7 @@ public class ObjectApplicationTests {
 		assertThat(body.getInt("inserted") == 3);
 		assertThat(body.getJSONArray("ids").length() == 3);
 	}
-	
+
 	public void getObject(String collection, String id) throws Exception {
 		ResponseEntity<JsonNode> response = this.restTemplate.getForEntity(baseUrlPath + "/{db}/{collection}/{id}", JsonNode.class, DB_NAME, collection, id);
 		JsonContent<JsonNode> body = this.json.write(response.getBody());
@@ -162,7 +165,7 @@ public class ObjectApplicationTests {
 		assertThat(body).hasJsonPathStringValue("@.test");
 		assertThat(body).extractingJsonPathStringValue("@._id").isEqualTo(id);
 	}
-	
+
 	public int countObject(String collection) throws Exception {
 		MvcResult result = mvc.perform(post(baseUrlPath + "/" + DB_NAME + "/" + collection + "/count")
                 .content("{}")
@@ -171,7 +174,7 @@ public class ObjectApplicationTests {
 				.andReturn();
 		return (new JSONObject(result.getResponse().getContentAsString())).getInt("count");
 	}
-	
+
 	public int aggregate(String collection) throws Exception {
 		String aggregate = "[ { $group: { _id: '$test', count: { $sum: 1 } } }, { $sort: { count: -1  } } ]";
 		MvcResult result = mvc.perform(post(baseUrlPath + "/" + DB_NAME + "/" + collection + "/aggregate")
@@ -181,7 +184,7 @@ public class ObjectApplicationTests {
 				.andReturn();
 		return (new JSONObject(result.getResponse().getContentAsString())).getJSONArray("items").length();
 	}
-	
+
 	public int queryAllObjects(String collection) throws Exception {
 		MvcResult result = mvc.perform(post(baseUrlPath + "/" + DB_NAME + "/" + collection + "/find")
 				.content("{}")
@@ -190,7 +193,7 @@ public class ObjectApplicationTests {
 				.andReturn();
 		return (new JSONObject(result.getResponse().getContentAsString())).getInt("total");
 	}
-	
+
 	public int distinct(String collection) throws Exception {
 		MvcResult result = mvc.perform(post(baseUrlPath + "/" + DB_NAME + "/" + collection + "/distinct/test")
                 .content("{}")
@@ -199,7 +202,48 @@ public class ObjectApplicationTests {
 				.andReturn();
 		return (new JSONArray(result.getResponse().getContentAsString())).length();
 	}
-	
+
+	public int bulkCsvImport(String collection) throws Exception {
+
+		String languagePropertyName = "language";
+		String versionPropertyName = "version";
+		String otherPropertyName1 = "prop1";
+		String otherPropertyName2 = "prop2";
+
+		String csvHeader = languagePropertyName + "," + versionPropertyName + "," + otherPropertyName1 + "," + otherPropertyName2;
+
+		MockMultipartFile firstFile = new MockMultipartFile("csv", "filename.csv", "application/vnd.ms-excel", (csvHeader + "\n\"Java\",11.0,475,\"V\"\n\"C#\",7,532,\"L\"").getBytes());
+
+		MvcResult result = mvc.perform(MockMvcRequestBuilders.multipart(baseUrlPath + "/bulk/" + DB_NAME + "/" + collection + "?csvFormat=Default")
+			.file(firstFile)
+			.param("some-random", "4"))
+			.andExpect(status().isCreated())
+			.andReturn();
+
+		JSONObject jsonResponseBody = new JSONObject(result.getResponse().getContentAsString());
+		String insertedCount = jsonResponseBody.get("inserted").toString();
+		assertThat(insertedCount).isEqualTo("2");
+
+		JSONArray inserted = jsonResponseBody.getJSONArray("ids");
+		String firstId = inserted.getString(0);
+
+		ResponseEntity<JsonNode> response = this.restTemplate.getForEntity(baseUrlPath + "/{db}/{collection}/{id}", JsonNode.class, DB_NAME, collection, firstId);
+		JsonContent<JsonNode> body = this.json.write(response.getBody());
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(body).hasJsonPathStringValue("@." + languagePropertyName);
+		assertThat(body).hasJsonPathStringValue("@." + versionPropertyName);
+		assertThat(body).hasJsonPathStringValue("@." + otherPropertyName1);
+		assertThat(body).hasJsonPathStringValue("@." + otherPropertyName2);
+
+		// Everything is converted to a string, even numbers
+		assertThat(body).extractingJsonPathStringValue("@." + languagePropertyName).isEqualTo("Java");
+		assertThat(body).extractingJsonPathStringValue("@." + versionPropertyName).isEqualTo("11.0");
+		assertThat(body).extractingJsonPathStringValue("@." + otherPropertyName1).isEqualTo("475");
+		assertThat(body).extractingJsonPathStringValue("@." + otherPropertyName2).isEqualTo("V");
+
+		return inserted.length();
+	}
+
 	public void deleteObject(String collection, String id) throws IOException {
 		ResponseEntity<JsonNode> response = this.restTemplate.exchange(baseUrlPath + "/{db}/{collection}/{id}", HttpMethod.DELETE, null, JsonNode.class, DB_NAME, collection, id);
 		JsonContent<JsonNode> body = this.json.write(response.getBody());
@@ -207,7 +251,7 @@ public class ObjectApplicationTests {
 		assertThat(body).hasJsonPathBooleanValue("@.success");
 		assertThat(body).extractingJsonPathBooleanValue("@.success").isEqualTo(true);
 	}
-	
+
 	public void deleteCollection(String collection) throws IOException {
 		ResponseEntity<JsonNode> response = this.restTemplate.exchange(baseUrlPath + "/{db}/{collection}", HttpMethod.DELETE, null, JsonNode.class, DB_NAME, collection);
 		JsonContent<JsonNode> body = this.json.write(response.getBody());
@@ -215,5 +259,5 @@ public class ObjectApplicationTests {
 		assertThat(body).hasJsonPathBooleanValue("@.success");
 		assertThat(body).extractingJsonPathBooleanValue("@.success").isEqualTo(true);
 	}
-	
+
 }
